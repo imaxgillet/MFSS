@@ -5,6 +5,7 @@ classdef MFVAR
   
   properties
     Y
+    W
     accumulator
     a0
     P0
@@ -32,24 +33,27 @@ classdef MFVAR
   end
   
   methods
-    function obj = MFVAR(data, lags, accumulator, a0, P0)
+    function obj = MFVAR(data, W, lags, accumulator, a0, P0)
       % MFVAR Constructor
       % 
       % Arguments: 
       %     data (double): data for VAR (T x p)
+      %     W (double): data for exogeneous variable (T x w), [] for none
       %     lags (double): number of lags to include in VAR
       %     accumulator (Accumulator): timing specification of data
       % Returns: 
       %     obj (MFVAR): estimation object
       
-      obj.Y = data;      
+      obj.Y = data;
+      obj.W = W;
       obj.nLags = lags;
-      if nargin > 2 
+      
+      if nargin > 3
         obj.accumulator = accumulator;
       else 
         obj.accumulator = Accumulator([], [], []);
       end
-      if nargin > 3
+      if nargin > 4
           obj.a0 = a0;
           obj.P0 = P0;
       end
@@ -82,7 +86,7 @@ classdef MFVAR
         tolLvl = num2str(abs(floor(log10(obj.tol)))+1);
         screenOutFormat = ['%11.0d | %16.8f | %12.' tolLvl 'f\n'];
       end
-      
+     
       tm = generateTM(obj);
 
       alpha = obj.initializeState();
@@ -217,7 +221,15 @@ classdef MFVAR
       tempMdl = obj;
       tempMdl.maxIter = 50;
       ssML = tempMdl.estimate(); 
-      alphaFull0 = ssML.smooth(obj.Y);
+
+      if isempty(obj.W)
+          W_used = [];
+      else
+          W_used = [obj.W; obj.W(end,:)];
+      end
+    
+
+      alphaFull0 = ssML.smooth(obj.Y, [], W_used);
       
       alpha0 = alphaFull0(:,1:obj.p*obj.nLags);
       paramSample = obj.sampleParameters(alpha0);
@@ -270,8 +282,15 @@ classdef MFVAR
       [ssVAR, theta] = obj.params2system(params, tm);
       ssVAR.a0 = a0;
       ssVAR.P0 = P0;
+
+      if isempty(obj.W)
+          W_used = [];
+      else
+          W_used = [obj.W; obj.W(end,:)];
+      end
+    
       
-      [state, sOut, fOut] = ssVAR.smooth(obj.Y);
+      [state, sOut, fOut] = ssVAR.smooth(obj.Y, [], W_used);
       logli = sOut.logli;
             
       % No observed data in period 0, L_0 = T_1.
@@ -285,7 +304,7 @@ classdef MFVAR
       
       if nargout > 2
         ssVAR = ssVAR.setDefaultInitial();
-        ssVAR = ssVAR.prepareFilter(obj.Y, [], []);
+        ssVAR = ssVAR.prepareFilter(obj.Y, [], W_used);
         sOut.N = cat(3, sOut.N, zeros(size(sOut.N, 1)));
         [V, J] = ssVAR.getErrorVariances(obj.Y', fOut, sOut);
       end
@@ -300,8 +319,9 @@ classdef MFVAR
       c = [params.cons; zeros(obj.p * (obj.nLags - 1), 1)];
       R = [eye(obj.p); zeros(obj.p * (obj.nLags - 1), obj.p)];
       Q = params.sigma;
-      
-      ss = StateSpace(Z, H, T, Q, 'c', c, 'R', R);
+      gamma = [params.gamma; zeros(obj.p*(obj.nLags - 1), size(params.gamma,2))];
+
+      ss = StateSpace(Z, H, T, Q, 'c', c, 'R', R, 'gamma', gamma);
       
       if ~isempty(obj.accumulator.index)
         ssA = obj.accumulator.augmentStateSpace(ss);
@@ -318,11 +338,13 @@ classdef MFVAR
       %
       % Everything here is in the companion VAR(1) form from the smoother. 
       % We just need to worry about estimating the VAR(1) case then. 
-      
+                  
       lagInx = 1:size(V,3)-1;
       coincInx = 2:size(V,3);
-      
-      constants = ones(1, length(lagInx))';
+      W_used = obj.W(2:end,:);
+      nExog = size(obj.W,2);
+
+      constants = [ones(1, length(lagInx))' W_used];
       
       xInd = 1:obj.p*obj.nLags;
       yInd = 1:obj.p;
@@ -334,16 +356,19 @@ classdef MFVAR
       addVy = sum(V(yInd, yInd, coincInx),3);
       
       % Restricted OLS Regression of errors
-      xxT =  blkdiag(addVx,0) + xvals' * xvals;
-      yxT = [addJ zeros(obj.p, 1)] + yvals' * xvals;
+      xxT =  blkdiag(addVx,zeros(nExog+1)) + xvals' * xvals;
+      yxT = [addJ zeros(obj.p, 1+nExog)] + yvals' * xvals;
       yyT = addVy + yvals' * yvals;
       
       OLS = yxT/xxT;
       Sigma = (yyT-OLS*yxT') ./ (size(alpha,1) - 1);
       Sigma = (Sigma + Sigma') ./ 2;
       
-      params = struct('phi', OLS(:, 1:obj.p*obj.nLags), 'cons', OLS(:,end), ...
-        'sigma', Sigma);
+      params = struct( ...
+          'phi', OLS(:, 1:obj.p*obj.nLags), ...
+          'cons', OLS(:,obj.p*obj.nLags + 1), ...
+          'gamma', OLS(:,(obj.p*obj.nLags + 2):end), ...
+          'sigma', Sigma);
     end
   end
   
@@ -520,7 +545,8 @@ classdef MFVAR
       c = [nan(obj.p,1); zeros(obj.p * (obj.nLags - 1), 1)];
       R = [eye(obj.p); zeros(obj.p * (obj.nLags - 1), obj.p)];
       Q = nan(obj.p);
-      ssE = StateSpaceEstimation(Z, H, T, Q, 'c', c, 'R', R);
+      gamma = [nan(obj.p, size(obj.W,2)); zeros(obj.p*(obj.nLags - 1), size(obj.W,2))];
+      ssE = StateSpaceEstimation(Z, H, T, Q, 'c', c, 'R', R, 'gamma', gamma);
       if ~isempty(obj.accumulator.index)
         ssEA = obj.accumulator.augmentStateSpaceEstimation(ssE);
         tm = ssEA.ThetaMapping;
