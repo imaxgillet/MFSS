@@ -14,7 +14,7 @@ classdef MFVAR
     verbose = false;
     
     tol = 1e-6;
-    maxIter = 1000;
+    maxIter = 10000;
     stationaryTol = 1;
     
     diagnosticPlot = true;
@@ -98,11 +98,8 @@ classdef MFVAR
 
       % Initial state estimate: put the high-frequency values in for the accumulators
       % if they don't already exist.
-      
-
       if isempty(obj.a0)
         obj.a0 = [alpha(1,:)'; zeros(tm.m - size(alpha,2), 1)];
-        %obj.a0 = zeros(size(alpha0, 2) + length(obj.accumulator.index), 1);
       end
 
       if isempty(obj.P0)
@@ -113,6 +110,8 @@ classdef MFVAR
      
       % Set up progress window
       [ssVAR, theta] = obj.params2system(params, tm);
+      ssVAR.a0 = obj.a0;
+      ssVAR.P0 = obj.P0;
       progress = EstimationProgress([theta; obj.a0], obj.diagnosticPlot, size(alpha0,2), ssVAR);
       stop = false;
       errorIndicator = '';
@@ -126,8 +125,7 @@ classdef MFVAR
         params = obj.estimateOLS_VJ(alpha, V, J);
        
         % E-step: Get state conditional on parameters
-        %[alpha, logli, V, J, a0tilde, ssVAR, theta] = obj.stateEstimate(params, a0tilde, obj.P0, tm);
-        [alpha, logli, V, J, ~, ssVAR, theta] = obj.stateEstimate(params, obj.a0, obj.P0, tm);
+        [alpha, logli, V, J, obj.a0, ssVAR, theta] = obj.stateEstimate(params, obj.a0, obj.P0, tm);
         
         % Put filtered state in figure for plotting
         progress.alpha = alpha';  
@@ -228,7 +226,6 @@ classdef MFVAR
           W_used = [obj.W; obj.W(end,:)];
       end
     
-
       alphaFull0 = ssML.smooth(obj.Y, [], W_used);
       
       alpha0 = alphaFull0(:,1:obj.p*obj.nLags);
@@ -276,7 +273,7 @@ classdef MFVAR
   
   %% EM algorithm
   methods (Hidden)
-    function [state, logli, V, J, a0tilde, ssVAR, theta] = stateEstimate(obj, params, a0, P0, tm)
+    function [state, logli, V, J, a0, ssVAR, theta] = stateEstimate(obj, params, a0, P0, tm)
       % Estimate latent state and variances
       
       [ssVAR, theta] = obj.params2system(params, tm);
@@ -289,25 +286,18 @@ classdef MFVAR
           W_used = [obj.W; obj.W(end,:)];
       end
     
-      
       [state, sOut, fOut] = ssVAR.smooth(obj.Y, [], W_used);
       logli = sOut.logli;
             
-      % No observed data in period 0, L_0 = T_1.
+      % No observed data in period 0
       if isempty(ssVAR.tau)
-        L0 = ssVAR.T;
+          L0 = ssVAR.T;
       else
-        L0 = ssVAR.T(:,:,ssVAR.tau.T(1));
+          L0 = ssVAR.T(:,:,ssVAR.tau.T(end));
       end
       r0 = L0' * sOut.r(:,1);
-      a0tilde = ssVAR.a0 + ssVAR.P0 * r0;
-      
-      if nargout > 2
-        ssVAR = ssVAR.setDefaultInitial();
-        ssVAR = ssVAR.prepareFilter(obj.Y, [], W_used);
-        sOut.N = cat(3, sOut.N, zeros(size(sOut.N, 1)));
-        [V, J] = ssVAR.getErrorVariances(obj.Y', fOut, sOut);
-      end
+      a0 = ssVAR.a0 + ssVAR.P0 * r0;
+      [V, J] = ssVAR.getErrorVariances(obj.Y', fOut, sOut);
     end
     
     function [ssA, theta] = params2system(obj, params, tm)
