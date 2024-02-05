@@ -14,7 +14,7 @@ classdef MFVAR
     verbose = false;
     
     tol = 1e-6;
-    maxIter = 10000;
+    maxIter = 1000;
     stationaryTol = 1;
     
     diagnosticPlot = true;
@@ -33,30 +33,41 @@ classdef MFVAR
   end
   
   methods
-    function obj = MFVAR(data, W, lags, accumulator, a0, P0)
+      function obj = MFVAR(data, lags, varargin)
       % MFVAR Constructor
-      % 
       % Arguments: 
       %     data (double): data for VAR (T x p)
-      %     W (double): data for exogeneous variable (T x w), [] for none
       %     lags (double): number of lags to include in VAR
-      %     accumulator (Accumulator): timing specification of data
+      %     accumulator (Accumulator): (optional) timing specification of data
+      % Name/Value Arguments:
+      %     W (double)
+      %     a0 (double)
+      %     P0 (double)
       % Returns: 
       %     obj (MFVAR): estimation object
       
-      obj.Y = data;
-      obj.W = W;
-      obj.nLags = lags;
+
+      baseAccumulator = Accumulator([], [], []);
+
+      inP = inputParser();
+      inP.addRequired('data', @ismatrix); 
+      inP.addRequired('lags', @isnumeric);
+      inP.addOptional('accumulator', baseAccumulator, @(x) isa(x, 'Accumulator'));
+
+      inP.addParameter('W', [], @ismatrix);
+      inP.addParameter('a0', [], @isnumeric);
+      inP.addParameter('P0', [], @isnumeric);
+      inP.parse(data, lags, varargin{:});
+      parsed = inP.Results;
       
-      if nargin > 3
-        obj.accumulator = accumulator;
-      else 
-        obj.accumulator = Accumulator([], [], []);
-      end
-      if nargin > 4
-          obj.a0 = a0;
-          obj.P0 = P0;
-      end
+      obj.Y = data;
+      obj.nLags = lags;
+
+      obj.accumulator = parsed.accumulator;
+      obj.W = parsed.W;
+
+      obj.a0 = parsed.a0;
+      obj.P0 = parsed.P0;
     end
       
     function p = get.p(obj)
@@ -125,8 +136,9 @@ classdef MFVAR
         params = obj.estimateOLS_VJ(alpha, V, J);
        
         % E-step: Get state conditional on parameters
-        [alpha, logli, V, J, obj.a0, ssVAR, theta] = obj.stateEstimate(params, obj.a0, obj.P0, tm);
-        
+        [alpha, logli, V, J, tempa0, ssVAR, theta] = obj.stateEstimate(params, obj.a0, obj.P0, tm);
+        obj.a0 = tempa0;
+
         % Put filtered state in figure for plotting
         progress.alpha = alpha';  
         progress.ss = ssVAR;
@@ -292,6 +304,8 @@ classdef MFVAR
       % No observed data in period 0
       if isempty(ssVAR.tau)
           L0 = ssVAR.T;
+          ssVAR = ssVAR.prepareFilter(obj.Y, [], W_used);
+          sOut.N = cat(3, sOut.N, zeros(size(sOut.N, 1)));
       else
           L0 = ssVAR.T(:,:,ssVAR.tau.T(end));
       end
