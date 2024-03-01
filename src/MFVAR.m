@@ -7,6 +7,7 @@ classdef MFVAR
     Y
     W
     accumulator
+    alpha0
     a0
     P0
     
@@ -43,6 +44,7 @@ classdef MFVAR
       %     W (double)
       %     a0 (double)
       %     P0 (double)
+      %     alpha (double)
       % Returns: 
       %     obj (MFVAR): estimation object
       
@@ -55,6 +57,7 @@ classdef MFVAR
       inP.addOptional('accumulator', baseAccumulator, @(x) isa(x, 'Accumulator'));
 
       inP.addParameter('W', [], @ismatrix);
+      inP.addParameter('alpha0', [], @ismatrix);
       inP.addParameter('a0', [], @isnumeric);
       inP.addParameter('P0', [], @isnumeric);
       inP.parse(data, lags, varargin{:});
@@ -66,6 +69,7 @@ classdef MFVAR
       obj.accumulator = parsed.accumulator;
       obj.W = parsed.W;
 
+      obj.alpha0 = parsed.alpha0;
       obj.a0 = parsed.a0;
       obj.P0 = parsed.P0;
     end
@@ -100,10 +104,16 @@ classdef MFVAR
      
       tm = generateTM(obj);
 
-      alpha = obj.initializeState();
-      alpha0 = alpha;
+      if isempty(obj.alpha0)
+        alpha = obj.initializeState();
+        obj.alpha0 = alpha;
+      else
+        alpha = lagmatrix(obj.alpha0, 0:obj.nLags-1);
+        alpha(isnan(alpha)) = 0;
+        obj.alpha0 = alpha;
+      end
 
-      zeroMats = zeros([obj.p*obj.nLags, obj.p*obj.nLags, size(alpha0,1)]);
+      zeroMats = zeros([obj.p*obj.nLags, obj.p*obj.nLags, size(obj.alpha0,1)]);
       V = zeroMats;
       J = zeroMats;
 
@@ -114,7 +124,7 @@ classdef MFVAR
       end
 
       if isempty(obj.P0)
-        obj.P0 = 1000 * eye(size(alpha0, 2) + tm.m - size(alpha,2));
+        obj.P0 = 1000 * eye(size(obj.alpha0, 2) + tm.m - size(alpha,2));
       end
 
       params = obj.estimateOLS_VJ(alpha, V, J);
@@ -123,7 +133,7 @@ classdef MFVAR
       [ssVAR, theta] = obj.params2system(params, tm);
       ssVAR.a0 = obj.a0;
       ssVAR.P0 = obj.P0;
-      progress = EstimationProgress([theta; obj.a0], obj.diagnosticPlot, size(alpha0,2), ssVAR);
+      progress = EstimationProgress([theta; obj.a0], obj.diagnosticPlot, size(obj.alpha0,2), ssVAR);
       stop = false;
       errorIndicator = '';
       
@@ -139,7 +149,7 @@ classdef MFVAR
         [alpha, logli, V, J, tempa0, ssVAR, theta] = obj.stateEstimate(params, obj.a0, obj.P0, tm);
         obj.a0 = tempa0;
 
-        % Put filtered state in figure for plotting
+        % Put smoothed state in figure for plotting
         progress.alpha = alpha';  
         progress.ss = ssVAR;
         if iter < 2
@@ -240,8 +250,8 @@ classdef MFVAR
     
       alphaFull0 = ssML.smooth(obj.Y, [], W_used);
       
-      alpha0 = alphaFull0(:,1:obj.p*obj.nLags);
-      paramSample = obj.sampleParameters(alpha0);
+      obj.alpha0 = alphaFull0(:,1:obj.p*obj.nLags);
+      paramSample = obj.sampleParameters(obj.alpha0);
       
       % Set up progress window
       theta = [0 0]';
@@ -307,7 +317,7 @@ classdef MFVAR
           ssVAR = ssVAR.prepareFilter(obj.Y, [], W_used);
           sOut.N = cat(3, sOut.N, zeros(size(sOut.N, 1)));
       else
-          L0 = ssVAR.T(:,:,ssVAR.tau.T(end));
+          L0 = ssVAR.T(:,:,ssVAR.tau.T(1));
       end
       r0 = L0' * sOut.r(:,1);
       a0 = ssVAR.a0 + ssVAR.P0 * r0;

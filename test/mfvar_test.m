@@ -176,13 +176,17 @@ classdef mfvar_test < matlab.unittest.TestCase
         phi = phiRaw - ...
           [eye(p)*(max(abs(eig(phi2T(phiRaw))))-1) zeros(p, p*(lags-1))];
       end
-      const = randn(p,1);
-      sigma = 0;
-      while det(sigma) <= 0
-        sigmaRaw = randn(p);
-        sigma = eye(p) + 0.5 * (sigmaRaw + sigmaRaw');
-      end
-      
+      const = randn(p,1);      
+
+      positiveDefinite = 1;
+      while positiveDefinite > 0
+          sigma = 0;
+          while det(sigma) <= 0 
+            sigmaRaw = randn(p);
+            sigma = eye(p) + 0.5 * (sigmaRaw + sigmaRaw');
+          end
+          [~, positiveDefinite] = chol(sigma);
+      end 
       ss = StateSpace([eye(p) zeros(p,p*(lags-1))], zeros(p), ...
         phi2T(phi), sigma, 'c', [const; zeros(p*(lags-1),1)], ...
         'R', [eye(p); zeros(p*(lags-1),p)]);
